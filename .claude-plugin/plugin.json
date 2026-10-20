@@ -1,0 +1,5 @@
+{
+  "name": "autotitle",
+  "version": "0.1.0",
+  "description": "名前のないセッションに、ターン終了時に AI で名前を付ける (/rename を使う)"
+}
