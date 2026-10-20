@@ -39,6 +39,16 @@ export function pickTitle(text: string): string {
   return line.replace(/^["'「『]+|["'」』]+$/g, '').replace(/^(名前|タイトル)[:：]\s*/, '').slice(0, 40).trim()
 }
 
+// 名前は会話ではなくプロセスに付いていて、/clear すると前の会話の名前が新しい会話の
+// 先頭にそのまま書き込まれる。/clear 前の会話の id を覚えておき、今の名前がそれと同じなら
+// 「引き継がれただけ」とみなして付け直す
+let clearedFrom = ''
+
+async function inheritedOnClear($: EngineInterface, id: string, now: string, mark: Mark | undefined) {
+  if (mark || !clearedFrom || clearedFrom === id) return false
+  return now === (await currentTitle($, clearedFrom))
+}
+
 async function maybeName($: EngineInterface) {
   if ((await $.env.get('CC_AUTOTITLE')) === '0') return
   // セッションの中から起動された claude (Bash から呼んだ claude -p など) は親のセッション ID を
@@ -59,7 +69,7 @@ async function maybeName($: EngineInterface) {
     const now = await currentTitle($, id)
 
     let refine = false
-    if (now) {
+    if (now && !(await inheritedOnClear($, id, now, mark))) {
       // 自分が付けた名前のままで、見直しがまだなら 5 往復目に一度だけ付け直す
       if (!mark || mark.title !== now || mark.refined || n < REFINE_AT) return
       refine = true
@@ -95,6 +105,11 @@ async function maybeName($: EngineInterface) {
 }
 
 export const register: Register = on => {
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') clearedFrom = e.sessionId
+    return next(e)
+  })
+
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
     // メインの会話の、応答で終わったターンだけ。サブエージェントや中断は対象外

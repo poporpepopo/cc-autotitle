@@ -3,14 +3,15 @@ import type { On } from 'claude-code'
 
 import { pickTitle } from '../hooks/register'
 
-type World = { title: string; prompts: number; env?: Record<string, string> }
+// id: 今のセッション (既定 sid-1)、others: ほかのセッションの名前 (ccs が返す)
+type World = { title: string; prompts: number; env?: Record<string, string>; id?: string; others?: Record<string, string> }
 
 // セッション・ccs・モデル・/rename を差し替える。renamed に /rename の引数が溜まる
 function world(on: On, w: World) {
   const renamed: string[] = []
   const clock = mock.clock(on)
   mock.store(on)
-  on('session.id', async () => ({ value: 'sid-1' }))
+  on('session.id', async () => ({ value: w.id ?? 'sid-1' }))
   on('session.cwd', async () => ({ value: '/Users/me/Developer' }))
   on('session.messages', async () => ({
     value: Array.from({ length: w.prompts }, (_, i) => [
@@ -19,12 +20,17 @@ function world(on: On, w: World) {
     ]).flat(),
   }) as never)
   on('env.get', async (_$, e) => ({ value: { HOME: '/Users/me', ...w.env }[e.name] }) as never)
-  on('process.run', async () => ({
-    value: {
-      exitCode: 0, stdout: JSON.stringify([{ id: 'sid-1', title: w.title }]), stderr: '',
-      isStdoutTruncated: false, isStderrTruncated: false,
-    },
-  }))
+  on('process.run', async (_$, e) => {
+    const id = e.argv[3] ?? '' // ccs --json -a <id>
+    const title = id === (w.id ?? 'sid-1') ? w.title : (w.others?.[id] ?? '')
+    return {
+      value: {
+        exitCode: 0, stdout: JSON.stringify([{ id, title }]), stderr: '',
+        isStdoutTruncated: false, isStderrTruncated: false,
+      },
+    }
+  })
+  on('session.end', async (_$, e) => ({ sessionId: e.sessionId }) as never)
   on('model.complete', async () => ({
     value: { isAnswered: true, text: `「自動の名前 ${w.prompts}」\n`, usage: { input_tokens: 1, output_tokens: 1 } },
   }) as never)
@@ -67,6 +73,27 @@ test('手で付けた名前には触らない', async ($, on) => {
   const w: World = { title: '自分で付けた名前', prompts: 6 }
   const t = world(on, w)
   t.bind(e => $.turn.complete(e as never))
+  await t.turn()
+  expect(t.renamed).toEqual([])
+})
+
+test('/clear で前の会話から引き継がれただけの名前は付け直す', async ($, on) => {
+  // /clear 前の会話 old と、新しい会話 new の両方が同じ名前 (プロセスの名前が書き込まれた)
+  const w: World = { title: '前の作業', prompts: 1, id: 'old', others: {} }
+  const t = world(on, w)
+  t.bind(e => $.turn.complete(e as never))
+  await $.session.end({ reason: 'clear', sessionId: 'old' } as never)
+  w.id = 'new'
+  w.others = { old: '前の作業' }
+  await t.turn()
+  expect(t.renamed).toEqual(['自動の名前 1'])
+})
+
+test('/clear のあとでも、前の会話と違う名前 (自分で付けた名前) には触らない', async ($, on) => {
+  const w: World = { title: '新しく付けた名前', prompts: 2, id: 'new', others: { old: '前の作業' } }
+  const t = world(on, w)
+  t.bind(e => $.turn.complete(e as never))
+  await $.session.end({ reason: 'clear', sessionId: 'old' } as never)
   await t.turn()
   expect(t.renamed).toEqual([])
 })
